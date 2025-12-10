@@ -62,12 +62,41 @@ const supportedElems = new Set([
 ]);
 
 const makeContentCollector = (collectStyles, abrowser, apool, className2Author) => {
+  const cc = {};
   const _blockElems = {
     div: 1,
     p: 1,
     pre: 1,
     li: 1,
+    ul: 1,
+    ol: 1,
+    h1: 1,
+    h2: 1,
+    h3: 1,
+    h4: 1,
+    h5: 1,
+    h6: 1,
+    blockquote: 1,
+    section: 1,
+    article: 1,
+    header: 1,
+    footer: 1,
+    nav: 1,
+    main: 1,
+    aside: 1,
+    address: 1,
+    dl: 1,
+    dt: 1,
+    dd: 1,
+    fieldset: 1,
+    form: 1,
+    hr: 1,
+    noscript: 1,
+    table: 1,
+    tfoot: 1,
+    video: 1,
   };
+
 
   hooks.callAll('ccRegisterBlockElements').forEach((element) => {
     _blockElems[element] = 1;
@@ -117,7 +146,6 @@ const makeContentCollector = (collectStyles, abrowser, apool, className2Author) 
     self.startNew();
     return self;
   })();
-  const cc = {};
 
   const _ensureColumnZero = (state) => {
     if (!lines.atColumnZero()) {
@@ -185,14 +213,17 @@ const makeContentCollector = (collectStyles, abrowser, apool, className2Author) 
     _recalcAttribString(state);
   };
 
-  const _enterList = (state, listType) => {
+  const _enterList = (state, listType, start) => {
     if (!listType) return;
     const oldListType = state.lineAttributes.list;
     if (listType !== 'none') {
-      state.listNesting = (state.listNesting || 0) + 1;
+      const newNesting = (state.listNesting || 0) + 1;
+      state.listNesting = newNesting;
+
       // reminder that listType can be "number2", "number3" etc.
       if (listType.indexOf('number') !== -1) {
-        state.start = (state.start || 0) + 1;
+        state.startCounters = state.startCounters || {};
+        state.startCounters[state.listNesting] = start || 1;
       }
     }
 
@@ -379,8 +410,13 @@ const makeContentCollector = (collectStyles, abrowser, apool, className2Author) 
         if (atBeginningOfLine) {
           // newlines in the source mustn't become spaces at beginning of line box
           txt2 = txt2.replace(/^\n*/, '');
+
+          // Collapse leading whitespace if not in preMode, as HTML ignores it before block elements
+          if (!state.flags.preMode) {
+             txt2 = txt2.replace(/^\s+/, '');
+          }
         }
-        if (atBeginningOfLine && Object.keys(state.lineAttributes).length !== 0) {
+        if (atBeginningOfLine && Object.keys(state.lineAttributes).length !== 0 && txt2.length > 0) {
           _produceLineAttributesMarker(state);
         }
         lines.appendText(textify(txt2), state.attribString);
@@ -498,46 +534,43 @@ const makeContentCollector = (collectStyles, abrowser, apool, className2Author) 
               }
               type += String(Math.min(_MAX_LIST_LEVEL, (state.listNesting || 0) + 1));
             }
-            oldListTypeOrNull = (_enterList(state, type) || 'none');
+            let start = null;
+            if (tname === 'ol') {
+              const startAttr = node.getAttribute('start');
+              if (startAttr) {
+                const parsed = parseInt(startAttr, 10);
+                if (!isNaN(parsed)) start = parsed;
+              }
+            }
+            oldListTypeOrNull = (_enterList(state, type, start) || 'none');
           } else if ((tname === 'div' || tname === 'p') && cls && cls.match(/(?:^| )ace-line\b/)) {
             // This has undesirable behavior in Chrome but is right in other browsers.
             // See https://github.com/ether/etherpad-lite/issues/2412 for reasoning
             if (!abrowser.chrome) oldListTypeOrNull = (_enterList(state, undefined) || 'none');
           } else if (tname === 'li') {
-            state.lineAttributes.start = state.start || 0;
-            _recalcAttribString(state);
-            if (state.lineAttributes.list.indexOf('number') !== -1) {
-              /*
-               Nested OLs are not --> <ol><li>1</li><ol>nested</ol></ol>
-               They are           --> <ol><li>1</li><li><ol><li>nested</li></ol></li></ol>
-               Note how the <ol> item has to be inside a <li>
-               Because of this we don't increment the start number
-              */
-              if (node.parentNode && tagName(node.parentNode) !== 'ol') {
-                /*
-                TODO: start number has to increment based on indentLevel(numberX)
-                This means we have to build an object IE
-                {
-                 1: 4
-                 2: 3
-                 3: 5
-                }
-                But the browser seems to handle it fine using CSS..  Why can't we do the same
-                with exports?  We can..  But let's leave this comment in because it might be useful
-                in the future..
-                */
-                state.start++; // not if it's parent is an OL or UL.
+            if (!state.lineAttributes.list) {
+              // Orphaned LI: Implicitly enter a list (default to bullet)
+              let type = 'bullet';
+              const val = node.getAttribute('value');
+              const typeAttr = node.getAttribute('type');
+              if (val || (typeAttr && ['1', 'a', 'A', 'i', 'I'].includes(typeAttr))) {
+                type = 'number';
               }
+              type += '1'; // Level 1
+              oldListTypeOrNull = (_enterList(state, type) || 'none');
             }
+
+            if (state.lineAttributes.list && state.lineAttributes.list.indexOf('number') !== -1) {
+              state.startCounters = state.startCounters || {};
+              const level = state.listNesting || 1;
+              const currentStart = state.startCounters[level] || 1;
+              state.lineAttributes.start = currentStart;
+              state.startCounters[level] = currentStart + 1;
+            } else {
+              delete state.lineAttributes.start;
+            }
+            _recalcAttribString(state);
             // UL list items never modify the start value.
-            if (node.parentNode && tagName(node.parentNode) === 'ul') {
-              state.start++;
-              // TODO, this is hacky.
-              // Because if the first item is an UL it will increment a list no?
-              // A much more graceful way would be to say, ul increases if it's within an OL
-              // But I don't know a way to do that because we're only aware of the previous Line
-              // As the concept of parent's doesn't exist when processing each domline...
-            }
           } else {
             // Below needs more testin if it's necessary as _exitList should take care of this.
             // delete state.start;

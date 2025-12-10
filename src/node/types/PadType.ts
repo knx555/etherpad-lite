@@ -30,11 +30,11 @@ type PadRange = {
 
 
 export type APool = {
-    putAttrib: ([],flag?: boolean)=>number,
+    putAttrib: (attrib: [string, string], flag?: boolean)=>number,
     numToAttrib: MapArrayType<any>,
     toJsonable: ()=>any,
     clone: ()=>APool,
-    check: ()=>Promise<void>,
+    check: ()=>void,
     eachAttrib: (callback: (key: string, value: any)=>void)=>void,
     getAttrib: (key: number)=>any,
 }
